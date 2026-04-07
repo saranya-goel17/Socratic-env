@@ -1,0 +1,28 @@
+{
+  "entries": [
+    {
+      "model_name": "Llama 3.1 8B (baseline)",
+      "factual_recall": 0.71,
+      "socratic_dialogue": 0.68,
+      "misconception_trap": 0.58,
+      "overall": 0.657,
+      "timestamp": "2026-04-06 17:10 UTC"
+    },
+    {
+      "model_name": "Random agent",
+      "factual_recall": 0.18,
+      "socratic_dialogue": 0.22,
+      "misconception_trap": 0.1,
+      "overall": 0.167,
+      "timestamp": "2026-04-06 17:10 UTC"
+    },
+    {
+      "model_name": "Test Model pytest",
+      "factual_recall": 0.75,
+      "socratic_dialogue": 0.68,
+      "misconception_trap": 0.6,
+      "overall": 0.677,
+      "timestamp": "2026-04-07 13:24 UTC"
+    }
+  ]
+}

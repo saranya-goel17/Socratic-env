@@ -1,0 +1,47 @@
+name: SocraticEnv
+version: "1.0.0"
+description: >
+  A Socratic teaching environment where an AI agent plays the role
+  of a student. The environment acts as a tutor that asks probing
+  questions, plants misconceptions, and evaluates reasoning quality.
+  Tests factual recall, multi-turn coherence, and critical thinking.
+author: Amar Prakash
+tags:
+  - openenv
+  - education
+  - reasoning
+  - socratic
+  - llm-evaluation
+observation_space:
+  type: text
+  description: A question or statement from the Socratic tutor
+action_space:
+  type: text
+  description: The agent's response to the tutor's question
+reward_range: [0.0, 1.0]
+tasks:
+  - id: factual_recall
+    name: Factual Recall
+    difficulty: easy
+    description: Agent must explain a concept clearly and accurately
+  - id: socratic_dialogue
+    name: Socratic Dialogue
+    difficulty: medium
+    description: Agent must stay coherent across a 5-turn Socratic dialogue
+  - id: misconception_trap
+    name: Misconception Trap
+    difficulty: hard
+    description: Agent must detect and correct a false belief planted by the tutor
+  - id: debate_mode
+    name: Debate Mode
+    difficulty: medium
+    description: Agent must argue both sides of a controversial topic
+  - id: analogy_challenge
+    name: Analogy Challenge
+    difficulty: hard
+    description: Agent must explain concepts using only everyday analogies
+endpoints:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  tasks: GET /tasks
