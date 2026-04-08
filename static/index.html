@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>SocraticEnv — Live Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -97,6 +98,13 @@
     }
     .turn-dot.done { background: #7c3aed; }
     .turn-dot.current { background: #a855f7; animation: pulse 1s infinite; }
+    
+    /* NEW: Styling for the chart container */
+    .chart-container {
+      background: #0d1117; border: 1px solid #30363d;
+      border-radius: 8px; padding: 10px; margin-top: 8px;
+    }
+
     .main { display: flex; flex-direction: column; overflow: hidden; }
     .controls {
       background: #161b22; border-bottom: 1px solid #30363d;
@@ -310,6 +318,7 @@
         <div class="task-desc">Explain complex concepts using ONLY analogies. No technical jargon allowed!</div>
       </div>
     </div>
+
     <div class="sidebar-section">
       <div class="sidebar-title">Generate Custom Task</div>
       <div style="margin-bottom:8px;">
@@ -335,8 +344,6 @@
       </div>
       <div id="generateStatus" style="font-size:11px;color:#8b949e;min-height:16px;line-height:1.4;"></div>
     </div>
-    <div class="sidebar-section">
-      <div class="sidebar-title">Live Scores</div>
       <div class="score-grid">
         <div class="score-card full">
           <div class="score-value" id="overallScore">—</div>
@@ -350,6 +357,12 @@
           <div class="score-value" id="lastReward" style="color:#3fb950">—</div>
           <div class="score-label">Last Reward</div>
         </div>
+      </div>
+
+    <div class="sidebar-section" id="chartSection" style="display:none;">
+      <div class="sidebar-title">Score Progression</div>
+      <div class="chart-container">
+        <canvas id="scoreChart" width="100" height="60"></canvas>
       </div>
     </div>
 
@@ -423,6 +436,10 @@ let maxTurns      = 3;
 let sessionResults = [];
 let currentHistory = [];
 
+// NEW: Globals for Chart and Export Data
+let scoreChartInstance = null;
+let exportData = null;
+
 async function checkStatus() {
   try {
     const r = await fetch(`${API}/ping`);
@@ -457,14 +474,77 @@ function selectTask(taskId) {
   document.getElementById('taskHint').textContent = hints[taskId];
 }
 
+// NEW: Initialize the Chart.js graph
+function initChart() {
+  const ctx = document.getElementById('scoreChart').getContext('2d');
+  if (scoreChartInstance) {
+    scoreChartInstance.destroy();
+  }
+  
+  scoreChartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'Reward Score',
+        data: [],
+        borderColor: '#a855f7',
+        backgroundColor: '#a855f720',
+        borderWidth: 2,
+        tension: 0.3,
+        fill: true,
+        pointBackgroundColor: '#e6edf3'
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        y: { 
+          min: 0, 
+          max: 1.05, 
+          grid: { color: '#30363d' }, 
+          ticks: { color: '#8b949e', font: { size: 10 } } 
+        },
+        x: { 
+          grid: { display: false }, 
+          ticks: { color: '#8b949e', font: { size: 10 } } 
+        }
+      },
+      plugins: {
+        legend: { display: false }
+      }
+    }
+  });
+  document.getElementById('chartSection').style.display = 'block';
+}
+
+// NEW: Update Chart data
+function updateChart(turn, score) {
+  if (!scoreChartInstance) return;
+  scoreChartInstance.data.labels.push(`Turn ${turn}`);
+  scoreChartInstance.data.datasets[0].data.push(score);
+  scoreChartInstance.update();
+}
+
 async function startEpisode() {
   clearDialogue();
   episodeActive  = true;
   totalScore     = 0;
   turnCount      = 0;
   currentHistory = [];
-
+  
+  // NEW: Reset export structure and chart
+  exportData = {
+    task: selectedTask,
+    timestamp: new Date().toLocaleString(),
+    turns: [],
+    final_score: 0,
+    feedback: ''
+  };
+  initChart();
   const maxMap = { factual_recall: 3, socratic_dialogue: 5, misconception_trap: 3, debate_mode: 4, analogy_challenge: 3 };
+  
   maxTurns = maxMap[selectedTask];
   buildTurnTrack(maxTurns);
   updateScores();
@@ -481,6 +561,10 @@ async function startEpisode() {
     const data = await r.json();
     const question = data.observation.question;
     currentHistory.push({ role: 'tutor', content: question });
+    
+    // NEW: Record initial state for export
+    exportData.turns.push({ turn: 0, tutor_opening: question });
+
     addTutorMessage(question);
     enableInput();
     document.getElementById('turnLabel').textContent = `Turn 1 of ${maxTurns}`;
@@ -515,15 +599,33 @@ async function sendResponse(response) {
     totalScore += score;
     updateScores(score);
     updateTurnTrack(turnCount);
+    
+    // NEW: Update chart visually
+    updateChart(turnCount, score);
 
     const nextQuestion = data.observation.question;
     currentHistory.push({ role: 'tutor', content: nextQuestion });
+    
+    // NEW: Save turn data for export
+    exportData.turns.push({
+        turn: turnCount,
+        agent_response: response,
+        reward_score: score,
+        breakdown: data.reward.breakdown,
+        tutor_next: nextQuestion
+    });
+
     addTutorMessage(nextQuestion, data.reward);
 
     if (data.done) {
       episodeActive = false;
       stopAutoRun();
       const avg = totalScore / turnCount;
+      
+      // NEW: Finalize export data
+      exportData.final_score = avg;
+      exportData.feedback = data.reward.feedback;
+
       showComplete(avg, data.reward.feedback);
       saveToHistory(selectedTask, avg);
       document.getElementById('btnStart').disabled = false;
@@ -630,17 +732,22 @@ function resetAll() {
   episodeActive  = false;
   autoRunning    = false;
   currentHistory = [];
+  exportData     = null;
   clearTimeout(autoRunTimer);
   stopAutoRun();
   clearDialogue();
   totalScore = 0; turnCount = 0;
+  
   document.getElementById('overallScore').textContent = '—';
   document.getElementById('turnCount').textContent = '0';
   document.getElementById('lastReward').textContent = '—';
   document.getElementById('turnTrack').innerHTML = '';
   document.getElementById('turnLabel').textContent = 'No active episode';
   document.getElementById('btnStart').disabled = false;
+  document.getElementById('chartSection').style.display = 'none';
+  if(scoreChartInstance) scoreChartInstance.destroy();
   disableInput();
+  
   document.getElementById('dialogueArea').innerHTML =
     `<div class="empty-state" id="emptyState">
       <div class="empty-icon">🎓</div>
@@ -714,22 +821,84 @@ function removeTyping() { document.getElementById('typingIndicator')?.remove(); 
 function showComplete(score, feedback) {
   const area = document.getElementById('dialogueArea');
   const div  = document.createElement('div');
+  
+  // NEW: Added the Export buttons to the completion banner
   div.innerHTML = `
-    <div class="complete-banner">
-      <div class="complete-left">
-        <div class="complete-icon">${score >= 0.7 ? '🏆' : score >= 0.5 ? '✅' : '📝'}</div>
-        <div>
-          <div class="complete-title">Episode Complete</div>
-          <div class="complete-sub">${feedback}</div>
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      <div class="complete-banner">
+        <div class="complete-left">
+          <div class="complete-icon">${score >= 0.7 ? '🏆' : score >= 0.5 ? '✅' : '📝'}</div>
+          <div>
+            <div class="complete-title">Episode Complete</div>
+            <div class="complete-sub">${feedback}</div>
+          </div>
         </div>
+        <div class="final-score">${score.toFixed(3)}</div>
       </div>
-      <div class="final-score">${score.toFixed(3)}</div>
+      <div style="display:flex; gap:10px;">
+        <button class="btn btn-secondary" style="flex:1; justify-content:center" onclick="downloadExport('json')">
+          📄 Download JSON Data
+        </button>
+        <button class="btn btn-secondary" style="flex:1; justify-content:center" onclick="downloadExport('txt')">
+          📝 Download Readable Report
+        </button>
+      </div>
     </div>`;
   area.appendChild(div);
   area.scrollTop = area.scrollHeight;
   document.getElementById('overallScore').textContent = score.toFixed(3);
   document.getElementById('overallScore').style.color =
     score >= 0.7 ? '#3fb950' : score >= 0.5 ? '#d29922' : '#f85149';
+}
+
+// NEW: Functions to handle downloading the Episode Report
+function downloadExport(format) {
+  if (!exportData) return;
+  
+  let content = "";
+  let mimeType = "";
+  let filename = `SocraticEnv_${exportData.task}_${Date.now()}`;
+
+  if (format === 'json') {
+    content = JSON.stringify(exportData, null, 2);
+    mimeType = "application/json";
+    filename += ".json";
+  } else if (format === 'txt') {
+    // Generate a beautifully formatted Markdown/Text report
+    content = `================================================
+SOCRATIC ENV — EVALUATION REPORT
+================================================
+Task:        ${exportData.task}
+Timestamp:   ${exportData.timestamp}
+Final Score: ${exportData.final_score.toFixed(3)}
+Feedback:    ${exportData.feedback}
+------------------------------------------------\n\n`;
+
+    exportData.turns.forEach(t => {
+      if (t.turn === 0) {
+        content += `[TUTOR OPENING]\n${t.tutor_opening}\n\n`;
+      } else {
+        content += `[TURN ${t.turn}]\n`;
+        content += `Agent:  ${t.agent_response}\n`;
+        content += `Reward: ${t.reward_score.toFixed(3)}\n`;
+        content += `Breakdown: ${JSON.stringify(t.breakdown)}\n`;
+        content += `Tutor:  ${t.tutor_next}\n\n`;
+      }
+    });
+    
+    mimeType = "text/plain";
+    filename += ".txt";
+  }
+
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function clearDialogue() { document.getElementById('dialogueArea').innerHTML = ''; }
@@ -791,7 +960,6 @@ function saveToHistory(task, score) {
       </div>`).join('');
 }
 
-// ── Custom Task Generator ─────────────────────────────────
 async function generateTask() {
   const topic = document.getElementById('topicInput').value.trim();
   const difficulty = document.getElementById('genDifficulty').value;
@@ -823,11 +991,7 @@ async function generateTask() {
     } else {
       status.style.color = '#3fb950';
       status.textContent = `✅ Ready! "${data.preview.substring(0, 60)}..."`;
-
-      // Auto-select the matching task
       selectTask(data.task_id);
-
-      // Clear input
       document.getElementById('topicInput').value = '';
     }
   } catch(e) {
