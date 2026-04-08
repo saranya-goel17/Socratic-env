@@ -1,7 +1,3 @@
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/novita/v3/openai")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/llama-3.1-8b-instruct")
-HF_TOKEN     = os.getenv("HF_TOKEN")
-
 """
 Inference Script — SocraticEnv
 ================================
@@ -26,6 +22,7 @@ load_dotenv()
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/novita/v3/openai")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/llama-3.1-8b-instruct")
 HF_TOKEN     = os.getenv("HF_TOKEN")
+ENV_URL      = os.getenv("ENV_URL", "http://localhost:7860")
 
 
 MAX_TURNS    = 10
