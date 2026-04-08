@@ -75,6 +75,7 @@ def step_env(response: str) -> dict:
 def run_task(task_id: str) -> dict:
     """Run one full episode of a task and return results."""
     print(f"\n── Task: {task_id} ─────────────────────────────────")
+    print(f"[START] task={task_id}", flush=True)
 
     reset_data = reset_env(task_id)
     obs = reset_data["observation"]
@@ -102,6 +103,7 @@ def run_task(task_id: str) -> dict:
         turns += 1
 
         print(f"  Reward: {reward:.3f} | Breakdown: {result['reward']['breakdown']}")
+        print(f"[STEP] step={turns} reward={reward}", flush=True)
 
         if result["done"]:
             break
@@ -111,6 +113,7 @@ def run_task(task_id: str) -> dict:
 
     final_score = round(min(total_score / max(turns, 1), 1.0), 3)
     print(f"  ── Final Score: {final_score} ({'PASS' if final_score >= 0.5 else 'FAIL'})")
+    print(f"[END] task={task_id} score={final_score} steps={turns}", flush=True)
 
     return {
         "task": task_id,
