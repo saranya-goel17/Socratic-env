@@ -1,3 +1,7 @@
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/novita/v3/openai")
+MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/llama-3.1-8b-instruct")
+HF_TOKEN     = os.getenv("HF_TOKEN")
+
 """
 Inference Script — SocraticEnv
 ================================
@@ -19,10 +23,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "mistralai/Mistral-7B-Instruct-v0.3")
-HF_TOKEN     = os.getenv("HF_TOKEN",     "")
-ENV_URL      = os.getenv("ENV_URL",      "http://localhost:7860")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/novita/v3/openai")
+MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/llama-3.1-8b-instruct")
+HF_TOKEN     = os.getenv("HF_TOKEN")
+
 
 MAX_TURNS    = 10
 TEMPERATURE  = 0.3

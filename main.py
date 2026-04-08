@@ -44,6 +44,16 @@ env = SocraticEnvironment()
 class ResetRequest(BaseModel):
     task_id: str = "factual_recall"
 
+    @classmethod
+    def __get_validators__(cls):
+        yield cls._validate
+
+    @classmethod
+    def _validate(cls, v):
+        if v is None:
+            return cls()
+        return cls(**v) if isinstance(v, dict) else v
+
 
 class StepRequest(BaseModel):
     response: str
@@ -141,7 +151,32 @@ def list_tasks():
 
 
 @app.post("/reset")
-def reset(req: ResetRequest):
+def reset(req: Optional[ResetRequest] = None):
+    """
+    Start a new episode for the given task.
+    Returns the first observation (tutor's opening question).
+    Accepts empty body — defaults to factual_recall.
+    """
+    if req is None:
+        req = ResetRequest()
+
+    valid_tasks = [
+        "factual_recall", "socratic_dialogue", "misconception_trap",
+        "debate_mode", "analogy_challenge"
+    ]
+    if req.task_id not in valid_tasks:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid task_id '{req.task_id}'. Choose from: {valid_tasks}",
+        )
+    try:
+        obs = env.reset(req.task_id)
+        return {
+            "observation": obs.model_dump(),
+            "message": f"Episode started for task: {req.task_id}",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     """
     Start a new episode for the given task.
     Returns the first observation (tutor's opening question).
