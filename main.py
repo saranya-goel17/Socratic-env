@@ -170,6 +170,13 @@ def reset(req: Optional[ResetRequest] = None):
             detail=f"Invalid task_id '{req.task_id}'. Choose from: {valid_tasks}",
         )
     try:
+        # If a generated task is pending for this task_id,
+        # force environment to use index 0 (the just-generated topic)
+        if _pending_generated_task.get(req.task_id):
+            env._force_first_topic = True
+            _pending_generated_task[req.task_id] = False
+        else:
+            env._force_first_topic = False
         obs = env.reset(req.task_id)
         return {
             "observation": obs.model_dump(),
@@ -568,14 +575,21 @@ async def run_leaderboard_evaluation(request: dict):
 
 class GenerateTaskRequest(BaseModel):
     topic: str
-    difficulty: str = "medium"  # easy, medium, hard
+    difficulty: str = "medium"
+    task_type: str = ""  # optional: force specific task type
+
+# Store the last generated task so reset() can use it deterministically
+_pending_generated_task: dict = {}
 
 @app.post("/generate_task")
 async def generate_task(req: GenerateTaskRequest):
     """
     Use an LLM to generate a brand new Socratic task on any topic.
-    Makes the environment infinitely replayable.
+    Injects it at position 0 and sets a pending flag so the next
+    reset() call uses it deterministically — no randomness.
     """
+    global _pending_generated_task
+
     api_base = os.getenv("API_BASE_URL", "").strip()
     hf_token = os.getenv("HF_TOKEN", "").strip()
     model    = os.getenv("MODEL_NAME", "").strip()
@@ -583,63 +597,89 @@ async def generate_task(req: GenerateTaskRequest):
     if not hf_token or not api_base or not model:
         return {"error": "API credentials not configured."}
 
-    difficulty_instructions = {
-        "easy": (
-            "Generate a simple factual question about the topic. "
-            "Then generate 2 follow-up questions that go slightly deeper. "
-            "Finally generate a common misconception about this topic as a statement."
-        ),
-        "medium": (
-            "Generate an open-ended philosophical or analytical question about the topic "
-            "that requires reasoning, not just facts. "
-            "Then generate 4 probing follow-up questions that challenge the student's thinking."
-        ),
-        "hard": (
-            "Generate an overview question about the topic. "
-            "Then generate a confident but FALSE statement about the topic "
-            "that sounds plausible but is actually wrong. "
-            "This will be used to test if an AI can detect the misconception."
-        ),
+    # Map difficulty + task_type to actual task_id
+    difficulty_task_map = {
+        "easy":   "factual_recall",
+        "medium": "socratic_dialogue",
+        "hard":   "misconception_trap",
+        "debate": "debate_mode",
+        "analogy":"analogy_challenge",
     }
 
-    prompt = f"""You are designing a Socratic tutoring session about: "{req.topic}"
+    # Determine task_id
+    if req.task_type and req.task_type in difficulty_task_map:
+        task_id = difficulty_task_map[req.task_type]
+    else:
+        task_id = difficulty_task_map.get(req.difficulty, "socratic_dialogue")
 
-{difficulty_instructions[req.difficulty]}
+    # Map task_id back to structural difficulty for prompt
+    structural_difficulty = {
+        "factual_recall":    "easy",
+        "socratic_dialogue": "medium",
+        "misconception_trap":"hard",
+        "debate_mode":       "debate",
+        "analogy_challenge": "analogy",
+    }[task_id]
 
-Respond ONLY with valid JSON in exactly this format, no other text:
-
-For easy difficulty:
+    # Build prompt based on structural type
+    prompts = {
+        "easy": f"""Generate a Socratic tutoring session about "{req.topic}".
+Output ONLY valid JSON, no markdown:
 {{
   "concept": "{req.topic}",
-  "opening": "your opening question here",
-  "follow_up": "your follow-up question here",
-  "common_misconception": "your misconception statement here",
+  "opening": "an opening question asking the student to explain {req.topic}",
+  "follow_up": "a deeper follow-up question about {req.topic}",
+  "common_misconception": "a common false belief about {req.topic} phrased as a statement",
   "key_terms": ["term1", "term2", "term3", "term4"]
-}}
+}}""",
 
-For medium difficulty:
+        "medium": f"""Generate a 5-turn Socratic dialogue about "{req.topic}".
+Output ONLY valid JSON, no markdown:
 {{
   "topic": "{req.topic}",
   "turns": [
-    "question 1",
-    "question 2", 
-    "question 3",
-    "question 4",
-    "question 5"
+    "opening philosophical question about {req.topic}",
+    "probing follow-up question 2",
+    "challenging question 3",
+    "deeper question 4",
+    "final synthesis question 5"
   ]
-}}
+}}""",
 
-For hard difficulty:
+        "hard": f"""Generate a misconception trap about "{req.topic}".
+Output ONLY valid JSON, no markdown:
 {{
   "subject": "{req.topic}",
-  "setup": "your overview question here",
-  "trap_statement": "your false statement here",
+  "setup": "opening question asking student to explain {req.topic}",
+  "trap_statement": "a confident but FALSE statement about {req.topic} that sounds plausible",
   "correct_response_keywords": ["keyword1", "keyword2", "keyword3"],
-  "explanation": "explanation of why the statement is false",
-  "follow_up_after_correction": "your follow-up question after correction"
-}}
+  "explanation": "why the trap statement is false",
+  "follow_up_after_correction": "follow-up question after student corrects the misconception"
+}}""",
 
-Generate for {req.difficulty} difficulty now:"""
+        "debate": f"""Generate a debate topic structure about "{req.topic}".
+Output ONLY valid JSON, no markdown:
+{{
+  "topic": "{req.topic}",
+  "turns": [
+    "Argue FOR the position that {req.topic} is beneficial — give your strongest case.",
+    "Now argue AGAINST — give the strongest case for the opposing view.",
+    "A critic says your arguments contradict each other. How do you respond?",
+    "What single most important factor should decide this debate about {req.topic}?"
+  ],
+  "key_argument_words": ["because", "evidence", "however", "argue", "therefore", "claim", "support"]
+}}""",
+
+        "analogy": f"""Generate an analogy challenge about "{req.topic}".
+Output ONLY valid JSON, no markdown:
+{{
+  "concept": "{req.topic}",
+  "opening": "Explain {req.topic} using ONLY everyday analogies — no technical jargon allowed.",
+  "follow_up": "Using the same analogy, explain a common challenge or limitation of {req.topic}.",
+  "hard_part": "Now use analogies to explain why {req.topic} can sometimes fail or go wrong.",
+  "key_analogy_words": ["like", "similar", "imagine", "think of", "just as", "same as", "kind of like", "as if"]
+}}""",
+    }
 
     try:
         client = OpenAI(base_url=api_base, api_key=hf_token)
@@ -648,68 +688,80 @@ Generate for {req.difficulty} difficulty now:"""
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a JSON generator. Output only valid JSON, no markdown, no explanation."
+                    "content": "You are a JSON generator. Output ONLY valid JSON. No markdown, no explanation, no code blocks."
                 },
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompts[structural_difficulty]}
             ],
-            max_tokens=600,
+            max_tokens=700,
             temperature=0.7,
         )
 
         raw = completion.choices[0].message.content.strip()
-
-        # Clean up markdown code blocks if model adds them
+        # Aggressively clean markdown artifacts
         raw = raw.replace("```json", "").replace("```", "").strip()
+        # Find the JSON object in case model adds text before/after
+        start = raw.find("{")
+        end   = raw.rfind("}") + 1
+        if start != -1 and end > start:
+            raw = raw[start:end]
 
         task_data = json.loads(raw)
         task_data["_generated"] = True
         task_data["_topic"] = req.topic
-        task_data["_difficulty"] = req.difficulty
 
-        # Inject into environment's question banks
-        if req.difficulty == "easy":
+        # Inject into the correct bank AND store as pending
+        # so the next reset() uses it deterministically
+        if task_id == "factual_recall":
             from environment import FACTUAL_TOPICS
-            # Ensure required fields exist
             if "key_terms" not in task_data:
-                task_data["key_terms"] = [req.topic]
+                task_data["key_terms"] = req.topic.lower().split()[:4]
             FACTUAL_TOPICS.insert(0, task_data)
-            return {
-                "success": True,
-                "task_id": "factual_recall",
-                "difficulty": "easy",
-                "topic": req.topic,
-                "preview": task_data.get("opening", ""),
-                "message": f"Generated new easy task about '{req.topic}'. Start a factual_recall episode to use it.",
-            }
+            preview = task_data.get("opening", "")
 
-        elif req.difficulty == "medium":
+        elif task_id == "socratic_dialogue":
             from environment import SOCRATIC_DIALOGUES
+            if "turns" not in task_data or not task_data["turns"]:
+                raise ValueError("Generated task missing 'turns' field")
             SOCRATIC_DIALOGUES.insert(0, task_data)
-            return {
-                "success": True,
-                "task_id": "socratic_dialogue",
-                "difficulty": "medium",
-                "topic": req.topic,
-                "preview": task_data.get("turns", [""])[0],
-                "message": f"Generated new medium task about '{req.topic}'. Start a socratic_dialogue episode to use it.",
-            }
+            preview = task_data["turns"][0]
 
-        elif req.difficulty == "hard":
+        elif task_id == "misconception_trap":
             from environment import MISCONCEPTION_TRAPS
             if "correct_response_keywords" not in task_data:
-                task_data["correct_response_keywords"] = ["wrong", "incorrect", "false"]
+                task_data["correct_response_keywords"] = ["wrong", "incorrect", "false", "no"]
             MISCONCEPTION_TRAPS.insert(0, task_data)
-            return {
-                "success": True,
-                "task_id": "misconception_trap",
-                "difficulty": "hard",
-                "topic": req.topic,
-                "preview": task_data.get("setup", ""),
-                "message": f"Generated new hard task about '{req.topic}'. Start a misconception_trap episode to use it.",
-            }
+            preview = task_data.get("setup", "")
+
+        elif task_id == "debate_mode":
+            from environment import DEBATE_TOPICS
+            if "key_argument_words" not in task_data:
+                task_data["key_argument_words"] = ["because", "evidence", "however", "argue", "therefore"]
+            if "turns" not in task_data or not task_data["turns"]:
+                raise ValueError("Generated debate task missing 'turns' field")
+            DEBATE_TOPICS.insert(0, task_data)
+            preview = task_data["turns"][0]
+
+        elif task_id == "analogy_challenge":
+            from environment import ANALOGY_CHALLENGES
+            if "key_analogy_words" not in task_data:
+                task_data["key_analogy_words"] = ["like", "similar", "imagine", "think of", "just as"]
+            ANALOGY_CHALLENGES.insert(0, task_data)
+            preview = task_data.get("opening", "")
+
+        # Store pending so next reset picks index 0 deterministically
+        _pending_generated_task[task_id] = True
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "difficulty": req.difficulty,
+            "topic": req.topic,
+            "preview": preview,
+            "message": f"Generated '{req.topic}' task. Click Start Episode to use it.",
+        }
 
     except json.JSONDecodeError as e:
-        return {"error": f"LLM returned invalid JSON: {str(e)}", "raw": raw}
+        return {"error": f"LLM returned invalid JSON. Try again.", "raw": raw[:200]}
     except Exception as e:
         return {"error": str(e)}
 

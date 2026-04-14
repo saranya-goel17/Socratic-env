@@ -216,7 +216,7 @@ class SocraticEnvironment:
 
         if task_id == "factual_recall":
             self.max_turns = 3
-            self.current_topic = random.choice(FACTUAL_TOPICS)
+            self.current_topic = FACTUAL_TOPICS[0] if getattr(self, '_force_first_topic', False) else random.choice(FACTUAL_TOPICS)
             opening = self.current_topic["opening"]
             obs = Observation(
                 question=opening,
@@ -227,7 +227,7 @@ class SocraticEnvironment:
 
         elif task_id == "socratic_dialogue":
             self.max_turns = 5
-            self.current_topic = random.choice(SOCRATIC_DIALOGUES)
+            self.current_topic = SOCRATIC_DIALOGUES[0] if getattr(self, '_force_first_topic', False) else random.choice(SOCRATIC_DIALOGUES)
             obs = Observation(
                 question=self.current_topic["turns"][0],
                 turn=self.turn,
@@ -237,7 +237,7 @@ class SocraticEnvironment:
 
         elif task_id == "misconception_trap":
             self.max_turns = 3
-            self.current_topic = random.choice(MISCONCEPTION_TRAPS)
+            self.current_topic = MISCONCEPTION_TRAPS[0] if getattr(self, '_force_first_topic', False) else random.choice(MISCONCEPTION_TRAPS)
             obs = Observation(
                 question=self.current_topic["setup"],
                 turn=self.turn,
@@ -246,7 +246,7 @@ class SocraticEnvironment:
             )
         elif task_id == "debate_mode":
             self.max_turns = 4
-            self.current_topic = random.choice(DEBATE_TOPICS)
+            self.current_topic = DEBATE_TOPICS[0] if getattr(self, '_force_first_topic', False) else random.choice(DEBATE_TOPICS)
             obs = Observation(
                 question=self.current_topic["turns"][0],
                 turn=self.turn,
@@ -257,7 +257,7 @@ class SocraticEnvironment:
 
         elif task_id == "analogy_challenge":
             self.max_turns = 3
-            self.current_topic = random.choice(ANALOGY_CHALLENGES)
+            self.current_topic = ANALOGY_CHALLENGES[0] if getattr(self, '_force_first_topic', False) else random.choice(ANALOGY_CHALLENGES)
             obs = Observation(
                 question=self.current_topic["opening"],
                 turn=self.turn,

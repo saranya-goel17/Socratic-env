@@ -331,9 +331,11 @@
       </div>
       <div style="display:flex;gap:6px;margin-bottom:8px;">
         <select id="genDifficulty" style="flex:1;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:6px;padding:5px 8px;font-size:11px;">
-          <option value="easy">Easy</option>
-          <option value="medium" selected>Medium</option>
-          <option value="hard">Hard</option>
+          <option value="easy">Easy — Factual</option>
+          <option value="medium" selected>Medium — Socratic</option>
+          <option value="hard">Hard — Trap</option>
+          <option value="debate">Medium — Debate</option>
+          <option value="analogy">Hard — Analogy</option>
         </select>
         <button
           onclick="generateTask()"
@@ -981,7 +983,7 @@ async function generateTask() {
     const r = await fetch(`${API}/generate_task`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic, difficulty }),
+      body: JSON.stringify({ topic, difficulty, task_type: difficulty }),
     });
     const data = await r.json();
 
