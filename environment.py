@@ -1,4 +1,6 @@
 import random
+import re
+import time
 from typing import Optional
 from pydantic import BaseModel
 
@@ -203,6 +205,8 @@ class SocraticEnvironment:
         self.current_topic: Optional[dict] = None
         self.trap_triggered: bool = False
         self.trap_corrected: bool = False
+        self.last_accessed: float = time.time()
+        self.rng = random.Random()
 
     def reset(self, task_id: str) -> Observation:
         """Reset the environment for a new episode."""
@@ -213,10 +217,11 @@ class SocraticEnvironment:
         self.history = []
         self.trap_triggered = False
         self.trap_corrected = False
+        self.last_accessed = time.time()
 
         if task_id == "factual_recall":
             self.max_turns = 3
-            self.current_topic = FACTUAL_TOPICS[0] if getattr(self, '_force_first_topic', False) else random.choice(FACTUAL_TOPICS)
+            self.current_topic = FACTUAL_TOPICS[0] if getattr(self, '_force_first_topic', False) else self.rng.choice(FACTUAL_TOPICS)
             opening = self.current_topic["opening"]
             obs = Observation(
                 question=opening,
@@ -227,7 +232,7 @@ class SocraticEnvironment:
 
         elif task_id == "socratic_dialogue":
             self.max_turns = 5
-            self.current_topic = SOCRATIC_DIALOGUES[0] if getattr(self, '_force_first_topic', False) else random.choice(SOCRATIC_DIALOGUES)
+            self.current_topic = SOCRATIC_DIALOGUES[0] if getattr(self, '_force_first_topic', False) else self.rng.choice(SOCRATIC_DIALOGUES)
             obs = Observation(
                 question=self.current_topic["turns"][0],
                 turn=self.turn,
@@ -237,7 +242,7 @@ class SocraticEnvironment:
 
         elif task_id == "misconception_trap":
             self.max_turns = 3
-            self.current_topic = MISCONCEPTION_TRAPS[0] if getattr(self, '_force_first_topic', False) else random.choice(MISCONCEPTION_TRAPS)
+            self.current_topic = MISCONCEPTION_TRAPS[0] if getattr(self, '_force_first_topic', False) else self.rng.choice(MISCONCEPTION_TRAPS)
             obs = Observation(
                 question=self.current_topic["setup"],
                 turn=self.turn,
@@ -246,7 +251,7 @@ class SocraticEnvironment:
             )
         elif task_id == "debate_mode":
             self.max_turns = 4
-            self.current_topic = DEBATE_TOPICS[0] if getattr(self, '_force_first_topic', False) else random.choice(DEBATE_TOPICS)
+            self.current_topic = DEBATE_TOPICS[0] if getattr(self, '_force_first_topic', False) else self.rng.choice(DEBATE_TOPICS)
             obs = Observation(
                 question=self.current_topic["turns"][0],
                 turn=self.turn,
@@ -257,7 +262,7 @@ class SocraticEnvironment:
 
         elif task_id == "analogy_challenge":
             self.max_turns = 3
-            self.current_topic = ANALOGY_CHALLENGES[0] if getattr(self, '_force_first_topic', False) else random.choice(ANALOGY_CHALLENGES)
+            self.current_topic = ANALOGY_CHALLENGES[0] if getattr(self, '_force_first_topic', False) else self.rng.choice(ANALOGY_CHALLENGES)
             obs = Observation(
                 question=self.current_topic["opening"],
                 turn=self.turn,
@@ -277,6 +282,7 @@ class SocraticEnvironment:
         if self.done:
             raise ValueError("Episode is done. Call reset() first.")
 
+        self.last_accessed = time.time()
         response = action.response.strip()
         self.history.append({"role": "agent", "content": response})
         self.turn += 1
@@ -311,6 +317,87 @@ class SocraticEnvironment:
             done=self.done,
         )
 
+    # ── Universal Anti-Cheating Penalties ─────────────────
+
+    def _check_parroting(self, response: str) -> bool:
+        """Check if the response parrots the tutor's last question using 4-grams."""
+        if not self.history:
+            return False
+        # Find the last tutor message
+        last_tutor = None
+        for entry in reversed(self.history):
+            if entry["role"] == "tutor":
+                last_tutor = entry["content"]
+                break
+        if not last_tutor:
+            return False
+
+        prompt_words = re.findall(r'\w+', last_tutor.lower())
+        response_words = re.findall(r'\w+', response.lower())
+
+        if len(prompt_words) < 5 or len(response_words) < 4:
+            return False
+
+        # Generate 4-grams
+        prompt_4grams = set(tuple(prompt_words[i:i+4]) for i in range(len(prompt_words) - 3))
+        response_4grams = set(tuple(response_words[i:i+4]) for i in range(len(response_words) - 3))
+        
+        if not prompt_4grams:
+            return False
+
+        overlap = len(prompt_4grams.intersection(response_4grams))
+        overlap_ratio = overlap / len(prompt_4grams)
+        
+        return overlap_ratio > 0.4
+
+    def _apply_universal_penalties(self, response: str, breakdown: dict,
+                                    keywords_found: list, step_score: float) -> float:
+        """Apply all universal anti-cheating penalties.
+        Returns the adjusted step_score (clamped to [0.0, 1.0]).
+        """
+        words = re.findall(r'\w+', response.lower())
+        word_count = len(words)
+        response_lower = response.lower()
+
+        # A. Rambling & Short Penalty
+        if word_count < 20:
+            breakdown["penalty_too_short"] = -0.2
+            step_score -= 0.2
+        if word_count > 80:
+            breakdown["rambling_penalty"] = -0.2
+            step_score -= 0.2
+
+        # B. Keyword Spam Penalty
+        if keywords_found:
+            total_occurrences = 0
+            for kw in keywords_found:
+                kw_lower = kw.lower()
+                if " " in kw_lower:
+                    total_occurrences += response_lower.count(kw_lower)
+                else:
+                    total_occurrences += len(re.findall(r'\b' + re.escape(kw_lower) + r'\b', response_lower))
+            
+            density = total_occurrences / max(word_count, 1)
+            if density > 0.15:
+                breakdown["keyword_spam_penalty"] = -0.4
+                step_score -= 0.4
+
+        # C. Parroting Penalty
+        if self._check_parroting(response):
+            breakdown["parroting_penalty"] = -0.5
+            step_score -= 0.5
+
+        # D. Syntax / List Spam Penalty
+        has_terminator = bool(re.search(r'[.!?]', response))
+        stop_words = {'the', 'is', 'a', 'to', 'of', 'and', 'in', 'that', 'it', 'for', 'on', 'with', 'as', 'by', 'at', 'are', 'this', 'was', 'be'}
+        unique_stops = set(words).intersection(stop_words)
+        
+        if not has_terminator or len(unique_stops) < 3:
+            breakdown["syntax_penalty"] = -0.4
+            step_score -= 0.4
+
+        return max(0.0, min(1.0, round(step_score, 3)))
+
     # ── Task-specific step logic ──────────────────────────
 
     def _step_factual(self, response: str) -> StepResult:
@@ -319,22 +406,24 @@ class SocraticEnvironment:
         breakdown = {}
 
         # Score based on key terms mentioned
-        terms_found = [t for t in topic["key_terms"] if t.lower() in response_lower]
+        terms_found = []
+        for t in topic["key_terms"]:
+            if " " in t.lower():
+                if t.lower() in response_lower:
+                    terms_found.append(t)
+            else:
+                if re.search(r'\b' + re.escape(t.lower()) + r'\b', response_lower):
+                    terms_found.append(t)
+                    
         term_score = min(len(terms_found) / len(topic["key_terms"]), 1.0) * 0.4
         breakdown["key_terms"] = round(term_score, 3)
 
-        # Score based on response length and substance
+        # Score based on response length and substance (capped at 60 words)
         word_count = len(response.split())
-        substance_score = min(word_count / 50, 1.0) * 0.3
+        substance_score = min(word_count / 60, 1.0) * 0.3
         breakdown["substance"] = round(substance_score, 3)
 
-        # Penalise very short answers
-        penalty = 0.0
-        if word_count < 10:
-            penalty = 0.2
-            breakdown["penalty_too_short"] = -penalty
-
-        step_score = max(0.0, round(term_score + substance_score - penalty, 3))
+        step_score = round(term_score + substance_score, 3)
 
         # Decide next question
         done = False
@@ -347,12 +436,20 @@ class SocraticEnvironment:
             done = True
 
         # Check if agent correctly rejected misconception on turn 3
+        bonus_score = 0.0
         if self.turn == 3:
             rejection_words = ["no", "not correct", "incorrect", "wrong", "false", "actually", "disagree"]
-            if any(w in response_lower for w in rejection_words):
+            if any(re.search(r'\b' + re.escape(w) + r'\b', response_lower) for w in rejection_words):
                 breakdown["misconception_rejected"] = 0.3
-                step_score = min(1.0, step_score + 0.3)
+                bonus_score = 0.3
             done = True
+
+        # Apply universal anti-cheating penalties
+        step_score = self._apply_universal_penalties(response, breakdown, terms_found, step_score)
+        
+        # Add protected bonus AFTER penalties (Issue #17)
+        if bonus_score > 0.0:
+            step_score = min(1.0, step_score + bonus_score)
 
         obs = Observation(
             question=next_q,
@@ -362,7 +459,7 @@ class SocraticEnvironment:
         self.history.append({"role": "tutor", "content": next_q})
 
         reward = Reward(
-            score=min(step_score, 1.0),
+            score=step_score,
             breakdown=breakdown,
             feedback=f"Terms found: {terms_found}. Words: {word_count}.",
         )
@@ -373,22 +470,29 @@ class SocraticEnvironment:
         breakdown = {}
         word_count = len(response.split())
 
-        # Reward thoughtful engagement
+        # Reward thoughtful engagement (capped at 60 words)
         depth_score = min(word_count / 60, 1.0) * 0.35
         breakdown["depth"] = round(depth_score, 3)
 
         # Reward reasoning words
         reasoning_words = ["because", "therefore", "however", "although", "since",
                            "implies", "suggests", "evidence", "argue", "consider"]
-        reasoning_found = [w for w in reasoning_words if w in response_lower]
+        reasoning_found = [w for w in reasoning_words if re.search(r'\b' + re.escape(w) + r'\b', response_lower)]
         reasoning_score = min(len(reasoning_found) / 3, 1.0) * 0.35
         breakdown["reasoning_quality"] = round(reasoning_score, 3)
 
-        # Reward staying on topic (basic check)
-        on_topic_score = 0.3 if word_count > 20 else 0.1
+        # Reward staying on topic - require actual topic words
+        topic_words = [w for w in re.findall(r'\w+', self.current_topic["topic"].lower()) if len(w) > 3]
+        on_topic_score = 0.0
+        if any(re.search(r'\b' + re.escape(tw) + r'\b', response_lower) for tw in topic_words):
+            on_topic_score = 0.3
+            
         breakdown["on_topic"] = on_topic_score
 
         step_score = round(depth_score + reasoning_score + on_topic_score, 3)
+
+        # Apply universal anti-cheating penalties
+        step_score = self._apply_universal_penalties(response, breakdown, reasoning_found, step_score)
 
         done = self.turn >= self.max_turns
         turns = self.current_topic["turns"]
@@ -404,7 +508,7 @@ class SocraticEnvironment:
         self.history.append({"role": "tutor", "content": next_q})
 
         reward = Reward(
-            score=min(step_score, 1.0),
+            score=step_score,
             breakdown=breakdown,
             feedback=f"Reasoning words found: {reasoning_found}. Words: {word_count}.",
         )
@@ -413,11 +517,14 @@ class SocraticEnvironment:
     def _step_misconception(self, response: str) -> StepResult:
         response_lower = response.lower()
         breakdown = {}
+        word_count = len(response.split())
+
+        # Collect keywords found for anti-cheat (varies by turn)
+        all_keywords_found = []
 
         if self.turn == 1:
             # First turn: agent gives overview — score for substance
-            word_count = len(response.split())
-            substance = min(word_count / 50, 1.0) * 0.4
+            substance = min(word_count / 60, 1.0) * 0.4
             breakdown["initial_substance"] = round(substance, 3)
             step_score = substance
 
@@ -429,7 +536,16 @@ class SocraticEnvironment:
         elif self.turn == 2:
             # Critical turn: did agent catch the trap?
             keywords = self.current_topic["correct_response_keywords"]
-            caught = [k for k in keywords if k.lower() in response_lower]
+            caught = []
+            for k in keywords:
+                if " " in k.lower():
+                    if k.lower() in response_lower:
+                        caught.append(k)
+                else:
+                    if re.search(r'\b' + re.escape(k.lower()) + r'\b', response_lower):
+                        caught.append(k)
+                        
+            all_keywords_found = caught
             catch_score = min(len(caught) / 2, 1.0) * 0.6
             breakdown["trap_caught"] = round(catch_score, 3)
 
@@ -445,7 +561,6 @@ class SocraticEnvironment:
 
         else:
             # Turn 3: follow-up explanation
-            word_count = len(response.split())
             explanation_score = min(word_count / 60, 1.0) * 0.5
             breakdown["explanation_quality"] = round(explanation_score, 3)
 
@@ -458,6 +573,9 @@ class SocraticEnvironment:
             next_q = "Thank you. That concludes this exercise."
             done = True
 
+        # Apply universal anti-cheating penalties
+        step_score = self._apply_universal_penalties(response, breakdown, all_keywords_found, step_score)
+
         obs = Observation(
             question=next_q,
             turn=self.turn,
@@ -467,11 +585,12 @@ class SocraticEnvironment:
         self.history.append({"role": "tutor", "content": next_q})
 
         reward = Reward(
-            score=min(max(step_score, 0.0), 1.0),
+            score=step_score,
             breakdown=breakdown,
             feedback=self.current_topic["explanation"] if self.turn >= 2 else "Good start.",
         )
         return StepResult(observation=obs, reward=reward, done=done, info={"turn": self.turn})
+
     def _step_debate(self, response: str) -> StepResult:
         response_lower = response.lower()
         breakdown = {}
@@ -479,27 +598,28 @@ class SocraticEnvironment:
 
         # Reward argument quality
         arg_words = self.current_topic["key_argument_words"]
-        arg_found = [w for w in arg_words if w in response_lower]
+        arg_found = [w for w in arg_words if re.search(r'\b' + re.escape(w) + r'\b', response_lower)]
         arg_score = min(len(arg_found) / 3, 1.0) * 0.4
         breakdown["argument_quality"] = round(arg_score, 3)
 
-        # Reward substance
+        # Reward substance (capped at 60 words)
         substance = min(word_count / 60, 1.0) * 0.35
         breakdown["substance"] = round(substance, 3)
 
         # Reward position clarity
         clarity_words = ["therefore", "conclude", "believe", "argue", "position",
                         "because", "evidence", "support", "oppose", "claim"]
-        clarity_found = [w for w in clarity_words if w in response_lower]
+        clarity_found = [w for w in clarity_words if re.search(r'\b' + re.escape(w) + r'\b', response_lower)]
         clarity = min(len(clarity_found) / 2, 1.0) * 0.25
         breakdown["clarity"] = round(clarity, 3)
 
-        # Penalty for too short
-        if word_count < 20:
-            breakdown["too_short_penalty"] = -0.2
-            arg_score = max(0, arg_score - 0.2)
-
         step_score = round(min(arg_score + substance + clarity, 1.0), 3)
+
+        # Combine all keyword lists for spam check
+        all_keywords_found = arg_found + clarity_found
+
+        # Apply universal anti-cheating penalties
+        step_score = self._apply_universal_penalties(response, breakdown, all_keywords_found, step_score)
 
         done = self.turn >= self.max_turns
         turns = self.current_topic["turns"]
@@ -532,26 +652,42 @@ class SocraticEnvironment:
 
         # Core scoring — did they actually use analogies?
         analogy_words = self.current_topic["key_analogy_words"]
-        analogies_found = [w for w in analogy_words if w in response_lower]
+        analogies_found = []
+        for w in analogy_words:
+            if " " in w:
+                if w in response_lower:
+                    analogies_found.append(w)
+            else:
+                if re.search(r'\b' + re.escape(w) + r'\b', response_lower):
+                    analogies_found.append(w)
+                    
         analogy_score = min(len(analogies_found) / 3, 1.0) * 0.5
         breakdown["analogy_usage"] = round(analogy_score, 3)
 
         # Penalise technical jargon
         jargon = ["algorithm", "data", "server", "protocol", "neural",
                   "training", "model", "bandwidth", "latency", "database"]
-        jargon_used = [j for j in jargon if j in response_lower]
+        jargon_used = [j for j in jargon if re.search(r'\b' + re.escape(j) + r'\b', response_lower)]
         jargon_penalty = min(len(jargon_used) * 0.1, 0.3)
         if jargon_used:
             breakdown["jargon_penalty"] = -round(jargon_penalty, 3)
 
-        # Reward substance
-        substance = min(word_count / 50, 1.0) * 0.3
+        # Reward substance (capped at 60 words)
+        substance = min(word_count / 60, 1.0) * 0.3
         breakdown["substance"] = round(substance, 3)
 
         # Reward creativity (unique analogies)
         creative_words = ["imagine", "think of", "picture", "like a", "just like",
                          "similar to", "same way", "kind of like"]
-        creative_found = [w for w in creative_words if w in response_lower]
+        creative_found = []
+        for w in creative_words:
+            if " " in w:
+                if w in response_lower:
+                    creative_found.append(w)
+            else:
+                if re.search(r'\b' + re.escape(w) + r'\b', response_lower):
+                    creative_found.append(w)
+                    
         creativity = min(len(creative_found) / 2, 1.0) * 0.2
         breakdown["creativity"] = round(creativity, 3)
 
@@ -559,6 +695,12 @@ class SocraticEnvironment:
             min(max(analogy_score + substance + creativity - jargon_penalty, 0.0), 1.0),
             3
         )
+
+        # Combine analogy + creative keywords for spam check
+        all_keywords_found = analogies_found + creative_found
+
+        # Apply universal anti-cheating penalties
+        step_score = self._apply_universal_penalties(response, breakdown, all_keywords_found, step_score)
 
         done = self.turn >= self.max_turns
         if self.turn == 1:

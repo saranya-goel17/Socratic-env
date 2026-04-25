@@ -66,8 +66,8 @@ def reset_env(task_id: str) -> dict:
     return r.json()
 
 
-def step_env(response: str) -> dict:
-    r = requests.post(f"{ENV_URL}/step", json={"response": response})
+def step_env(response: str, session_id: str) -> dict:
+    r = requests.post(f"{ENV_URL}/step", json={"response": response, "session_id": session_id})
     r.raise_for_status()
     return r.json()
 
@@ -78,6 +78,7 @@ def run_task(task_id: str) -> dict:
     print(f"[START] task={task_id}", flush=True)
 
     reset_data = reset_env(task_id)
+    session_id = reset_data["session_id"]
     obs = reset_data["observation"]
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -97,7 +98,7 @@ def run_task(task_id: str) -> dict:
         print(f"  Agent (turn {turns+1}): {agent_response[:80]}...")
 
         # Step the environment
-        result = step_env(agent_response)
+        result = step_env(agent_response, session_id)
         reward = result["reward"]["score"]
         total_score += reward
         turns += 1

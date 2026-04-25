@@ -13,11 +13,12 @@ BASE_URL = "http://localhost:7860"
 def _reset(task_id: str) -> dict:
     r = requests.post(f"{BASE_URL}/reset", json={"task_id": task_id})
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    return data
 
 
-def _step(response: str) -> dict:
-    r = requests.post(f"{BASE_URL}/step", json={"response": response})
+def _step(response: str, session_id: str) -> dict:
+    r = requests.post(f"{BASE_URL}/step", json={"response": response, "session_id": session_id})
     r.raise_for_status()
     return r.json()
 
@@ -48,12 +49,13 @@ def grade_factual_recall(agent_responses: Optional[list] = None) -> dict:
             ),
         ]
 
-    _reset("factual_recall")
+    reset_data = _reset("factual_recall")
+    session_id = reset_data["session_id"]
     total = 0.0
     turns = 0
 
     for resp in agent_responses:
-        result = _step(resp)
+        result = _step(resp, session_id)
         total += result["reward"]["score"]
         turns += 1
         if result["done"]:
@@ -103,12 +105,13 @@ def grade_socratic_dialogue(agent_responses: Optional[list] = None) -> dict:
             ),
         ]
 
-    _reset("socratic_dialogue")
+    reset_data = _reset("socratic_dialogue")
+    session_id = reset_data["session_id"]
     total = 0.0
     turns = 0
 
     for resp in agent_responses:
-        result = _step(resp)
+        result = _step(resp, session_id)
         total += result["reward"]["score"]
         turns += 1
         if result["done"]:
@@ -150,12 +153,13 @@ def grade_misconception_trap(agent_responses: Optional[list] = None) -> dict:
             ),
         ]
 
-    _reset("misconception_trap")
+    reset_data = _reset("misconception_trap")
+    session_id = reset_data["session_id"]
     total = 0.0
     turns = 0
 
     for resp in agent_responses:
-        result = _step(resp)
+        result = _step(resp, session_id)
         total += result["reward"]["score"]
         turns += 1
         if result["done"]:

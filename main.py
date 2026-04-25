@@ -1,14 +1,20 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 import os
+import uuid
 from dotenv import load_dotenv
 import json
 from pathlib import Path
 from datetime import datetime, timezone
+import threading
+import asyncio
+import time
+import random
+from contextlib import asynccontextmanager
 load_dotenv()
 import uvicorn
 
@@ -22,10 +28,32 @@ from environment import (
 
 # ── App Setup ─────────────────────────────────────────────
 
+async def cleanup_sessions():
+    """Background task to garbage collect stale sessions."""
+    while True:
+        try:
+            await asyncio.sleep(60)
+            now = time.time()
+            with session_lock:
+                stale_ids = [sid for sid, env in active_sessions.items() if now - env.last_accessed > 600]
+                for sid in stale_ids:
+                    del active_sessions[sid]
+        except asyncio.CancelledError:
+            break
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Create background task
+    task = asyncio.create_task(cleanup_sessions())
+    yield
+    # Shutdown: Cancel task
+    task.cancel()
+
 app = FastAPI(
     title="SocraticEnv",
     description="A Socratic teaching environment for the OpenEnv hackathon.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 app.mount("/ui", StaticFiles(directory="static", html=True), name="static")
 app.add_middleware(
@@ -35,14 +63,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# One global environment instance
-env = SocraticEnvironment()
+# ── Session-based state (thread-safe for concurrent GRPO rollouts) ──
+active_sessions: dict[str, SocraticEnvironment] = {}
+session_lock = threading.Lock()
+
+# ── Thread-safe generated task store ──
+# Keyed by generated_task_id -> {task_id: str, task_data: dict}
+_generated_tasks: dict[str, dict] = {}
 
 
 # ── Request / Response Models ─────────────────────────────
 
 class ResetRequest(BaseModel):
     task_id: str = "factual_recall"
+    generated_task_id: Optional[str] = None
+    seed: Optional[int] = None
 
     @classmethod
     def __get_validators__(cls):
@@ -57,6 +92,7 @@ class ResetRequest(BaseModel):
 
 class StepRequest(BaseModel):
     response: str
+    session_id: str
 
 
 class TaskInfo(BaseModel):
@@ -154,7 +190,7 @@ def list_tasks():
 def reset(req: Optional[ResetRequest] = None):
     """
     Start a new episode for the given task.
-    Returns the first observation (tutor's opening question).
+    Returns the first observation (tutor's opening question) and a session_id.
     Accepts empty body — defaults to factual_recall.
     """
     if req is None:
@@ -170,37 +206,62 @@ def reset(req: Optional[ResetRequest] = None):
             detail=f"Invalid task_id '{req.task_id}'. Choose from: {valid_tasks}",
         )
     try:
-        # If a generated task is pending for this task_id,
-        # force environment to use index 0 (the just-generated topic)
-        if _pending_generated_task.get(req.task_id):
-            env._force_first_topic = True
-            _pending_generated_task[req.task_id] = False
-        else:
-            env._force_first_topic = False
-        obs = env.reset(req.task_id)
+        with session_lock:
+            if len(active_sessions) >= 1000:
+                raise HTTPException(status_code=429, detail="Too many active sessions.")
+
+        # Generate a unique session ID
+        session_id = str(uuid.uuid4())
+
+        # Create a fresh environment for this session
+        env = SocraticEnvironment()
+
+        if req.seed is not None:
+            env.rng.seed(req.seed)
+
+        # If a generated task is provided, inject it deterministically
+        with session_lock:
+            if req.generated_task_id and req.generated_task_id in _generated_tasks:
+                gen_info = _generated_tasks.get(req.generated_task_id)
+                task_data = gen_info["task_data"]
+                task_id_for_gen = gen_info["task_id"]
+
+                # Override the requested task_id with the generated one
+                req.task_id = task_id_for_gen
+
+                # Inject the generated task directly into the instance
+                env._force_first_topic = True
+                env.current_topic = task_data
+                obs = env.reset(req.task_id)
+                # Overwrite the history opening because reset() might have selected from banks
+                if req.task_id == "factual_recall":
+                    obs.question = task_data.get("opening", "")
+                elif req.task_id in ("socratic_dialogue", "debate_mode"):
+                    obs.question = task_data.get("turns", [""])[0]
+                elif req.task_id == "misconception_trap":
+                    obs.question = task_data.get("setup", "")
+                elif req.task_id == "analogy_challenge":
+                    obs.question = task_data.get("opening", "")
+                
+                env.history = [{"role": "tutor", "content": obs.question}]
+            else:
+                env._force_first_topic = False
+                obs = env.reset(req.task_id)
+
+            # Store session
+            active_sessions[session_id] = env
+            
         return {
+            "session_id": session_id,
             "observation": obs.model_dump(),
             "message": f"Episode started for task: {req.task_id}",
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    """
-    Start a new episode for the given task.
-    Returns the first observation (tutor's opening question).
-    """
-    valid_tasks = ["factual_recall", "socratic_dialogue", "misconception_trap", "debate_mode", "analogy_challenge"]
-    if req.task_id not in valid_tasks:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid task_id '{req.task_id}'. Choose from: {valid_tasks}",
-        )
-    try:
-        obs = env.reset(req.task_id)
-        return {
-            "observation": obs.model_dump(),
-            "message": f"Episode started for task: {req.task_id}",
-        }
-    except Exception as e:
+        # Clean up session on failure
+        with session_lock:
+            active_sessions.pop(session_id, None)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -208,12 +269,25 @@ def reset(req: Optional[ResetRequest] = None):
 def step(req: StepRequest):
     """
     Submit the agent's response and get the next observation + reward.
+    Requires session_id from /reset.
     """
     if not req.response or not req.response.strip():
         raise HTTPException(
             status_code=400,
             detail="Response cannot be empty.",
         )
+        
+    req.response = req.response[:2000]
+
+    with session_lock:
+        env = active_sessions.get(req.session_id)
+        
+    if env is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session '{req.session_id}' not found. Call POST /reset first.",
+        )
+
     if env.done:
         raise HTTPException(
             status_code=400,
@@ -222,14 +296,29 @@ def step(req: StepRequest):
     try:
         action = Action(response=req.response)
         result = env.step(action)
-        return result.model_dump()
+        response_data = result.model_dump()
+
+        # CRITICAL MEMORY LEAK FIX: clean up completed sessions
+        if result.done:
+            with session_lock:
+                if req.session_id in active_sessions:
+                    del active_sessions[req.session_id]
+
+        return response_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/state")
-def state():
-    """Return the current state of the environment."""
+def state(session_id: str = Query(..., description="Session ID from /reset")):
+    """Return the current state of a specific session."""
+    with session_lock:
+        env = active_sessions.get(session_id)
+    if env is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session '{session_id}' not found.",
+        )
     return env.state().model_dump()
 
 class InferenceRequest(BaseModel):
@@ -485,6 +574,7 @@ async def run_leaderboard_evaluation(request: dict):
     """
     Run a full evaluation of a model across all 3 tasks
     and automatically save to leaderboard.
+    Uses its own local environment instance (not shared sessions).
     """
     model_name = request.get("model_name", "Unknown Model")
 
@@ -509,8 +599,9 @@ async def run_leaderboard_evaluation(request: dict):
         )
 
         for task_id in task_ids:
-            # Reset environment
-            obs = env.reset(task_id)
+            # Create a local environment for evaluation (not shared)
+            eval_env = SocraticEnvironment()
+            obs = eval_env.reset(task_id)
             total = 0.0
             turns = 0
             messages = [{"role": "system", "content": system_prompt}]
@@ -530,7 +621,7 @@ async def run_leaderboard_evaluation(request: dict):
 
                 messages.append({"role": "assistant", "content": response})
                 action = Action(response=response)
-                result = env.step(action)
+                result = eval_env.step(action)
                 total += result.reward.score
                 turns += 1
 
@@ -578,18 +669,49 @@ class GenerateTaskRequest(BaseModel):
     difficulty: str = "medium"
     task_type: str = ""  # optional: force specific task type
 
-# Store the last generated task so reset() can use it deterministically
-_pending_generated_task: dict = {}
+
+def _inject_generated_task(task_id: str, task_data: dict):
+    """Inject a generated task into the correct question bank at index 0."""
+    if task_id == "factual_recall":
+        from environment import FACTUAL_TOPICS
+        if "key_terms" not in task_data:
+            task_data["key_terms"] = task_data.get("concept", "").lower().split()[:4]
+        FACTUAL_TOPICS.insert(0, task_data)
+
+    elif task_id == "socratic_dialogue":
+        from environment import SOCRATIC_DIALOGUES
+        if "turns" not in task_data or not task_data["turns"]:
+            raise ValueError("Generated task missing 'turns' field")
+        SOCRATIC_DIALOGUES.insert(0, task_data)
+
+    elif task_id == "misconception_trap":
+        from environment import MISCONCEPTION_TRAPS
+        if "correct_response_keywords" not in task_data:
+            task_data["correct_response_keywords"] = ["wrong", "incorrect", "false", "no"]
+        MISCONCEPTION_TRAPS.insert(0, task_data)
+
+    elif task_id == "debate_mode":
+        from environment import DEBATE_TOPICS
+        if "key_argument_words" not in task_data:
+            task_data["key_argument_words"] = ["because", "evidence", "however", "argue", "therefore"]
+        if "turns" not in task_data or not task_data["turns"]:
+            raise ValueError("Generated debate task missing 'turns' field")
+        DEBATE_TOPICS.insert(0, task_data)
+
+    elif task_id == "analogy_challenge":
+        from environment import ANALOGY_CHALLENGES
+        if "key_analogy_words" not in task_data:
+            task_data["key_analogy_words"] = ["like", "similar", "imagine", "think of", "just as"]
+        ANALOGY_CHALLENGES.insert(0, task_data)
+
 
 @app.post("/generate_task")
 async def generate_task(req: GenerateTaskRequest):
     """
     Use an LLM to generate a brand new Socratic task on any topic.
-    Injects it at position 0 and sets a pending flag so the next
-    reset() call uses it deterministically — no randomness.
+    Stores it with a unique generated_task_id. The next /reset call
+    can reference this ID to use the generated task deterministically.
     """
-    global _pending_generated_task
-
     api_base = os.getenv("API_BASE_URL", "").strip()
     hf_token = os.getenv("HF_TOKEN", "").strip()
     model    = os.getenv("MODEL_NAME", "").strip()
@@ -709,51 +831,29 @@ Output ONLY valid JSON, no markdown:
         task_data["_generated"] = True
         task_data["_topic"] = req.topic
 
-        # Inject into the correct bank AND store as pending
-        # so the next reset() uses it deterministically
-        if task_id == "factual_recall":
-            from environment import FACTUAL_TOPICS
-            if "key_terms" not in task_data:
-                task_data["key_terms"] = req.topic.lower().split()[:4]
-            FACTUAL_TOPICS.insert(0, task_data)
+        # Generate a unique ID and store the task data
+        generated_task_id = str(uuid.uuid4())
+        _generated_tasks[generated_task_id] = {
+            "task_id": task_id,
+            "task_data": task_data,
+        }
+
+        # Determine preview text
+        if task_id in ("factual_recall",):
             preview = task_data.get("opening", "")
-
-        elif task_id == "socratic_dialogue":
-            from environment import SOCRATIC_DIALOGUES
-            if "turns" not in task_data or not task_data["turns"]:
-                raise ValueError("Generated task missing 'turns' field")
-            SOCRATIC_DIALOGUES.insert(0, task_data)
-            preview = task_data["turns"][0]
-
+        elif task_id in ("socratic_dialogue", "debate_mode"):
+            preview = task_data.get("turns", [""])[0]
         elif task_id == "misconception_trap":
-            from environment import MISCONCEPTION_TRAPS
-            if "correct_response_keywords" not in task_data:
-                task_data["correct_response_keywords"] = ["wrong", "incorrect", "false", "no"]
-            MISCONCEPTION_TRAPS.insert(0, task_data)
             preview = task_data.get("setup", "")
-
-        elif task_id == "debate_mode":
-            from environment import DEBATE_TOPICS
-            if "key_argument_words" not in task_data:
-                task_data["key_argument_words"] = ["because", "evidence", "however", "argue", "therefore"]
-            if "turns" not in task_data or not task_data["turns"]:
-                raise ValueError("Generated debate task missing 'turns' field")
-            DEBATE_TOPICS.insert(0, task_data)
-            preview = task_data["turns"][0]
-
         elif task_id == "analogy_challenge":
-            from environment import ANALOGY_CHALLENGES
-            if "key_analogy_words" not in task_data:
-                task_data["key_analogy_words"] = ["like", "similar", "imagine", "think of", "just as"]
-            ANALOGY_CHALLENGES.insert(0, task_data)
             preview = task_data.get("opening", "")
-
-        # Store pending so next reset picks index 0 deterministically
-        _pending_generated_task[task_id] = True
+        else:
+            preview = str(task_data)[:100]
 
         return {
             "success": True,
             "task_id": task_id,
+            "generated_task_id": generated_task_id,
             "difficulty": req.difficulty,
             "topic": req.topic,
             "preview": preview,

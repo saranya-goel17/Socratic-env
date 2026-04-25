@@ -437,6 +437,8 @@ let turnCount     = 0;
 let maxTurns      = 3;
 let sessionResults = [];
 let currentHistory = [];
+let sessionId      = null;
+let generatedTaskId = null;
 
 // NEW: Globals for Chart and Export Data
 let scoreChartInstance = null;
@@ -555,12 +557,18 @@ async function startEpisode() {
   document.getElementById('emptyState')?.remove();
 
   try {
+    const resetBody = { task_id: selectedTask };
+    if (generatedTaskId) {
+      resetBody.generated_task_id = generatedTaskId;
+      generatedTaskId = null;
+    }
     const r = await fetch(`${API}/reset`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_id: selectedTask }),
+      body: JSON.stringify(resetBody),
     });
     const data = await r.json();
+    sessionId = data.session_id;
     const question = data.observation.question;
     currentHistory.push({ role: 'tutor', content: question });
     
@@ -591,7 +599,7 @@ async function sendResponse(response) {
     const r = await fetch(`${API}/step`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ response }),
+      body: JSON.stringify({ response, session_id: sessionId }),
     });
     const data = await r.json();
     removeTyping();
@@ -735,6 +743,8 @@ function resetAll() {
   autoRunning    = false;
   currentHistory = [];
   exportData     = null;
+  sessionId      = null;
+  generatedTaskId = null;
   clearTimeout(autoRunTimer);
   stopAutoRun();
   clearDialogue();
@@ -993,6 +1003,7 @@ async function generateTask() {
     } else {
       status.style.color = '#3fb950';
       status.textContent = `✅ Ready! "${data.preview.substring(0, 60)}..."`;
+      generatedTaskId = data.generated_task_id || null;
       selectTask(data.task_id);
       document.getElementById('topicInput').value = '';
     }
