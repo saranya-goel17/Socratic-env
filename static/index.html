@@ -378,8 +378,8 @@
     }
     .btn-devtools:hover { color: #e6edf3; border-color: #a855f7; }
     .btn-devtools.active { color: #a855f7; border-color: #7c3aed; background: #13111e; }
-    .split-layout { display: flex; gap: 20px; width: 100%; }
-    .chat-column { flex: 1; display: flex; flex-direction: column; }
+    .split-layout { flex: 1; display: flex; gap: 20px; width: 100%; overflow: hidden; }
+    .chat-column { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
     .hidden-split { display: none !important; }
 
     /* Cyberpunk Glassmorphism Overrides */
@@ -542,7 +542,7 @@
         <label style="display:flex;align-items:center;gap:6px;color:#9ca3af;font-size:12px;cursor:pointer;">
           <input type="checkbox" id="split-screen-toggle" onchange="toggleSplitScreen()"> Live Comparison
         </label>
-        <button id="btn-export-evals" style="display:none;" onclick="exportOpenAIEvals()" class="btn btn-secondary">Export Evals JSONL</button>
+        <button id="btn-export-evals" style="display:none;" onclick="exportOpenAIEvals()" class="btn btn-secondary">Export Evals JSON</button>
         <button onclick="viewHeatmap()" class="btn btn-secondary">📊 Heatmap</button>
         <button class="btn-devtools" id="btnDevtools" onclick="toggleGlassBox()">
           <span>🔬</span> Reward Math
