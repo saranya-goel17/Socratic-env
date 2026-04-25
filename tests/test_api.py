@@ -66,13 +66,15 @@ def test_list_tasks_returns_all_five():
     r = client.get("/tasks")
     assert r.status_code == 200
     tasks = r.json()["tasks"]
-    assert len(tasks) == 5
+    assert len(tasks) == 7
     task_ids = [t["id"] for t in tasks]
     assert "factual_recall" in task_ids
     assert "socratic_dialogue" in task_ids
     assert "misconception_trap" in task_ids
     assert "debate_mode" in task_ids
     assert "analogy_challenge" in task_ids
+    assert "cot_misconception" in task_ids
+    assert "dynamic_misconception" in task_ids
 
 
 def test_tasks_have_required_fields():
@@ -236,6 +238,15 @@ def test_full_episode_all_tasks():
             "The internet is like a postal system where your computer sends letters to other computers, similar to how mail routes work.",
             "Clicking a link is like giving someone a new address to send their letter to, just as you redirect mail delivery.",
             "Slow websites are like traffic jams in the postal system, imagine too many letters at once overwhelming the system.",
+        ],
+        "cot_misconception": [
+            "Darwin's theory states species evolve through natural selection over many generations of gradual change.",
+            "<think>The tutor claims organisms intentionally evolve, but this is incorrect because evolution is driven by random mutations. Therefore I must disagree with this false claim.</think> No, evolution is not intentional. It happens through random mutation and natural selection with no goal.",
+        ],
+        "dynamic_misconception": [
+            "Darwin's theory of evolution explains that species change over time because natural selection favors beneficial traits.",
+            "No I disagree. Evolution is not purposeful. Changes happen through random mutation and natural selection simply favours helpful traits.",
+            "Natural selection works like a filter. Random mutations occur and helpful ones become more common over many generations.",
         ],
     }
 

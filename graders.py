@@ -146,6 +146,12 @@ def grade_misconception_trap(agent_responses: Optional[list] = None) -> dict:
                 "that improve survival and reproduction. There is no goal or direction."
             ),
             (
+                "I am certain that is incorrect and misleading. The concept of directed "
+                "mutation has been thoroughly debunked. Random mutations occur independently "
+                "of environmental pressures, and natural selection filters them. There is "
+                "no goal or intentional adaptation in the evolutionary process."
+            ),
+            (
                 "Natural selection works like a filter. Random mutations occur in a population. "
                 "Individuals whose mutations help them survive long enough to reproduce pass "
                 "those genes on. Over many generations the helpful traits become more common "
@@ -175,8 +181,99 @@ def grade_misconception_trap(agent_responses: Optional[list] = None) -> dict:
     }
 
 
+def grade_cot_response(agent_responses: Optional[list] = None) -> dict:
+    """
+    Grade the cot_misconception task.
+    Verifies that the agent uses <think>...</think> tags for reasoning.
+    """
+    if agent_responses is None:
+        agent_responses = [
+            (
+                "Darwin's theory of evolution states that species change over time through "
+                "natural selection. Individuals with traits better suited to their environment "
+                "survive and reproduce more, passing those traits to offspring."
+            ),
+            (
+                "<think>The tutor is claiming that evolution is intentional, but this is "
+                "incorrect because evolution happens through random mutation and natural "
+                "selection. There is no goal or purpose — organisms do not decide to adapt. "
+                "Therefore I should disagree with this false claim.</think> "
+                "No, that is incorrect. Evolution is not intentional or purposeful. It occurs "
+                "through random genetic mutations filtered by natural selection. There is no "
+                "goal and organisms do not choose to evolve."
+            ),
+        ]
+
+    reset_data = _reset("cot_misconception")
+    session_id = reset_data["session_id"]
+    total = 0.0
+    turns = 0
+
+    for resp in agent_responses:
+        result = _step(resp, session_id)
+        total += result["reward"]["score"]
+        turns += 1
+        if result["done"]:
+            break
+
+    final_score = round(min(total / max(turns, 1), 1.0), 3)
+    return {
+        "task": "cot_misconception",
+        "difficulty": "hard",
+        "score": final_score,
+        "turns": turns,
+        "passed": final_score >= 0.5,
+    }
+
+
+def grade_dynamic_misconception(agent_responses: Optional[list] = None) -> dict:
+    """
+    Grade the dynamic_misconception task.
+    Tests that DDA adjusts difficulty based on agent performance.
+    """
+    if agent_responses is None:
+        agent_responses = [
+            (
+                "Darwin's theory of evolution explains that species change over time because "
+                "of natural selection. Individuals with beneficial traits survive and reproduce "
+                "more effectively, therefore passing those traits to the next generation."
+            ),
+            (
+                "No, I strongly disagree. Evolution is not intentional or purposeful. "
+                "Changes happen through random mutation and natural selection simply "
+                "favours traits that improve survival. There is no goal."
+            ),
+            (
+                "Natural selection works like a filter. Random mutations occur in a population. "
+                "Individuals whose mutations help them survive long enough to reproduce pass "
+                "those genes on. Over many generations the helpful traits become more common."
+            ),
+        ]
+
+    reset_data = _reset("dynamic_misconception")
+    session_id = reset_data["session_id"]
+    total = 0.0
+    turns = 0
+
+    for resp in agent_responses:
+        result = _step(resp, session_id)
+        total += result["reward"]["score"]
+        turns += 1
+        if result["done"]:
+            break
+
+    final_score = round(min(total / max(turns, 1), 1.0), 3)
+    return {
+        "task": "dynamic_misconception",
+        "difficulty": "hard",
+        "score": final_score,
+        "turns": turns,
+        "passed": final_score >= 0.5,
+    }
+
+
 def run_all_graders() -> dict:
-    """Run all 3 graders and return combined results."""
+    """Run all 5 graders and return combined results."""
     print("\n── Running SocraticEnv Graders ──────────────────")
 
     results = {}

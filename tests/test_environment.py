@@ -54,7 +54,7 @@ def test_reset_misconception_trap(env):
     obs = env.reset("misconception_trap")
     assert isinstance(obs, Observation)
     assert obs.task_id == "misconception_trap"
-    assert env.max_turns == 3
+    assert env.max_turns == 4
     assert env.done == False
 
 
@@ -239,13 +239,15 @@ def test_state_updates_after_step(env):
 # ── Reward Range Tests ────────────────────────────────────
 
 def test_all_tasks_scores_in_range(env):
-    """Verify all 5 tasks produce scores in [0.0, 1.0] range."""
+    """Verify all 7 tasks produce scores in [0.0, 1.0] range."""
     tasks = [
         ("factual_recall", "Force equals mass times acceleration F=ma because Newton said so."),
         ("socratic_dialogue", "Consciousness is awareness and therefore subjective experience matters."),
         ("misconception_trap", "Darwin's theory states natural selection drives evolution over generations."),
         ("debate_mode", "I argue because evidence supports this position therefore it is valid."),
         ("analogy_challenge", "The internet is like a postal system where routers are like sorting offices."),
+        ("cot_misconception", "Darwin's theory states natural selection drives evolution over generations."),
+        ("dynamic_misconception", "Darwin's theory states natural selection drives evolution over generations."),
     ]
     for task_id, response in tasks:
         env.reset(task_id)
