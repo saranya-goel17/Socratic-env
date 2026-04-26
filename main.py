@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from typing import Optional
 from fastapi.staticfiles import StaticFiles
@@ -191,6 +192,11 @@ class TaskInfo(BaseModel):
 # ── Routes ────────────────────────────────────────────────
 
 @app.get("/")
+async def root():
+    """Redirects the root URL directly to the interactive dashboard."""
+    return RedirectResponse(url="/ui/index.html")
+    
+@app.get("/metadata")
 def root():
     return {
         "name": "SocraticEnv",
